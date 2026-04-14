@@ -1,0 +1,17 @@
+<div data-paper-size="4x2" style="
+        width: 4in;
+        min-height: 2in;
+        box-sizing: border-box;
+        padding: 12px;
+        font-family: Arial, sans-serif;
+        border: 1px solid #000;
+        background: #fff;
+        color: #000;
+    ">
+        <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">
+            Banana Bread
+        </div>
+        <div style="font-size: 12px; line-height: 1.4;">
+            Prepared: 2026-04-13 18:23<br>Expires: 2026-04-14 12:23<br>Qty: 12 trays<br>Ingredients: Flour, banana, egg, butter<br>Allergens: Wheat, Egg, Milk<br>Storage: Room temp display
+        </div>
+    </div>
