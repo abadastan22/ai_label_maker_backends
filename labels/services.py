@@ -1,10 +1,11 @@
-import os
 import re
 import socket
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from django.utils.html import escape
+from django.utils.timezone import localtime
 
 from .exceptions import (
     PrinterAdapterNotFoundError,
@@ -13,14 +14,92 @@ from .exceptions import (
 from .models import Label, PrintJob
 
 
-def render_label_html(label_title: str, label_body: str, paper_size: str = "4x2") -> str:
-    title = escape(label_title or "")
-    body = escape(label_body or "").replace("\n", "<br>")
+def _string(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _join_values(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(v).strip() for v in value if str(v).strip())
+    return str(value).strip()
+
+
+def _safe_attr(obj: Any, attr: str, default: Any = None) -> Any:
+    return getattr(obj, attr, default) if obj is not None else default
+
+
+def _format_dt(value) -> str:
+    if not value:
+        return ""
+    try:
+        return localtime(value).strftime("%-m/%-d/%Y, %-I:%M:%S %p")
+    except Exception:
+        try:
+            return localtime(value).strftime("%m/%d/%Y, %I:%M:%S %p")
+        except Exception:
+            return str(value)
+
+
+def render_label_html(
+    title: str,
+    prepared_at_text: str,
+    use_by_text: str,
+    prepared_by_text: str,
+    station_text: str,
+    quantity_text: str,
+    batch_code_text: str,
+    allergens_text: str,
+    notes_text: str,
+    paper_size: str = "4x2",
+) -> str:
+    esc = lambda value: escape(value or "")
+
+    details = []
+
+    if prepared_at_text:
+        details.append(f'<div style="margin-bottom:4px;">Prep: {esc(prepared_at_text)}</div>')
+
+    if use_by_text:
+        details.append(
+            f'<div style="margin-bottom:8px; color:#d62828;">Use By: {esc(use_by_text)}</div>'
+        )
+
+    if prepared_by_text:
+        details.append(f'<div>Prepared By: {esc(prepared_by_text)}</div>')
+
+    if station_text:
+        details.append(f'<div>Station: {esc(station_text)}</div>')
+
+    if quantity_text:
+        details.append(f'<div>Qty: {esc(quantity_text)}</div>')
+
+    if batch_code_text:
+        details.append(f'<div>Batch: {esc(batch_code_text)}</div>')
+
+    if allergens_text:
+        details.append(f'<div>Allergens: {esc(allergens_text)}</div>')
+
+    if notes_text:
+        details.append(f'<div>Notes: {esc(notes_text)}</div>')
+
+    width_map = {
+        "4x2": ("4in", "2in"),
+        "4×2": ("4in", "2in"),
+        "3x2": ("3in", "2in"),
+        "3×2": ("3in", "2in"),
+        "2x1": ("2in", "1in"),
+        "2×1": ("2in", "1in"),
+    }
+    width, min_height = width_map.get((paper_size or "4x2").strip(), ("4in", "2in"))
 
     return f"""
-    <div data-paper-size="{paper_size}" style="
-        width: 4in;
-        min-height: 2in;
+    <div data-paper-size="{escape(paper_size or '4x2')}" style="
+        width: {width};
+        min-height: {min_height};
         box-sizing: border-box;
         padding: 12px;
         font-family: Arial, sans-serif;
@@ -28,50 +107,168 @@ def render_label_html(label_title: str, label_body: str, paper_size: str = "4x2"
         background: #fff;
         color: #000;
     ">
-        <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">
-            {title}
+        <div style="font-size: 11px; letter-spacing: 2px; color: #667085; margin-bottom: 10px;">
+            FOOD PREP LABEL
         </div>
+
+        <div style="font-size: 18px; font-weight: 700; margin-bottom: 10px;">
+            {esc(title)}
+        </div>
+
         <div style="font-size: 12px; line-height: 1.4;">
-            {body}
+            {"".join(details)}
         </div>
     </div>
     """.strip()
 
 
 def build_label_body_from_prep_task(prep_task) -> str:
-    prep_item = prep_task.prep_item
+    prep_item = _safe_attr(prep_task, "prep_item")
+
+    prepared_at_text = _format_dt(_safe_attr(prep_task, "prepared_at"))
+    use_by_text = _format_dt(
+        _safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by")
+    )
+
+    quantity = _safe_attr(prep_task, "quantity")
+    unit = _string(_safe_attr(prep_task, "unit"))
+    qty_text = " ".join(part for part in [_string(quantity), unit] if part).strip()
+
+    prepared_by = _string(
+        _safe_attr(prep_task, "prepared_by_name")
+        or _safe_attr(prep_task, "prepared_by_text")
+        or _safe_attr(_safe_attr(prep_task, "prepared_by"), "get_full_name", lambda: "")()
+        or _safe_attr(_safe_attr(prep_task, "prepared_by"), "username")
+    )
+
+    station_text = _string(
+        _safe_attr(prep_task, "station")
+        or _safe_attr(prep_item, "station")
+        or _safe_attr(_safe_attr(prep_task, "department"), "name")
+    )
+
+    batch_code_text = _string(
+        _safe_attr(prep_task, "batch_code")
+        or _safe_attr(prep_item, "batch_code")
+    )
+
+    allergens_text = _join_values(
+        _safe_attr(prep_task, "allergens_text")
+        or _safe_attr(prep_task, "allergen_info")
+        or _safe_attr(prep_item, "allergens_text")
+        or _safe_attr(prep_item, "allergen_info")
+        or _safe_attr(prep_item, "allergens")
+    )
+
+    notes_text = _string(
+        _safe_attr(prep_task, "notes")
+        or _safe_attr(prep_item, "storage_notes")
+        or _safe_attr(prep_item, "notes")
+    )
 
     body_lines = [
-        f"Prepared: {prep_task.prepared_at:%Y-%m-%d %H:%M}" if prep_task.prepared_at else "",
-        f"Expires: {prep_task.expires_at:%Y-%m-%d %H:%M}" if prep_task.expires_at else "",
-        f"Qty: {prep_task.quantity} {prep_task.unit}".strip(),
+        f"Prepared: {prepared_at_text}" if prepared_at_text else "",
+        f"Expires: {use_by_text}" if use_by_text else "",
+        f"Qty: {qty_text}" if qty_text else "",
+        f"Prepared By: {prepared_by}" if prepared_by else "",
+        f"Station: {station_text}" if station_text else "",
+        f"Batch: {batch_code_text}" if batch_code_text else "",
+        f"Allergens: {allergens_text}" if allergens_text else "",
+        f"Notes: {notes_text}" if notes_text else "",
     ]
-
-    if prep_item.ingredients:
-        body_lines.append(f"Ingredients: {prep_item.ingredients}")
-
-    if prep_item.allergen_info:
-        body_lines.append(f"Allergens: {prep_item.allergen_info}")
-
-    if prep_item.storage_notes:
-        body_lines.append(f"Storage: {prep_item.storage_notes}")
 
     return "\n".join(line for line in body_lines if line)
 
 
 def build_label_from_prep_task(prep_task, paper_size: str = "4x2") -> Label:
-    label_title = prep_task.prep_item.name
+    prep_item = _safe_attr(prep_task, "prep_item")
+
+    title = _string(
+        _safe_attr(prep_task, "item_name_override")
+        or _safe_attr(prep_task, "name")
+        or _safe_attr(prep_item, "name")
+        or "Prep Label"
+    )
+
+    prepared_at_text = _format_dt(_safe_attr(prep_task, "prepared_at"))
+    use_by_text = _format_dt(
+        _safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by")
+    )
+
+    prepared_by_text = _string(
+        _safe_attr(prep_task, "prepared_by_name")
+        or _safe_attr(prep_task, "prepared_by_text")
+        or _safe_attr(_safe_attr(prep_task, "prepared_by"), "get_full_name", lambda: "")()
+        or _safe_attr(_safe_attr(prep_task, "prepared_by"), "username")
+    )
+
+    station_text = _string(
+        _safe_attr(prep_task, "station")
+        or _safe_attr(prep_item, "station")
+        or _safe_attr(_safe_attr(prep_task, "department"), "name")
+    )
+
+    quantity_value = _safe_attr(prep_task, "quantity")
+    quantity_unit = _string(_safe_attr(prep_task, "unit"))
+    quantity_text = " ".join(
+        part for part in [_string(quantity_value), quantity_unit] if part
+    ).strip()
+
+    batch_code_text = _string(
+        _safe_attr(prep_task, "batch_code")
+        or _safe_attr(prep_item, "batch_code")
+    )
+
+    allergens_text = _join_values(
+        _safe_attr(prep_task, "allergens_text")
+        or _safe_attr(prep_task, "allergen_info")
+        or _safe_attr(prep_item, "allergens_text")
+        or _safe_attr(prep_item, "allergen_info")
+        or _safe_attr(prep_item, "allergens")
+    )
+
+    notes_text = _string(
+        _safe_attr(prep_task, "notes")
+        or _safe_attr(prep_item, "storage_notes")
+        or _safe_attr(prep_item, "notes")
+    )
+
     label_body = build_label_body_from_prep_task(prep_task)
-    rendered_html = render_label_html(label_title, label_body, paper_size=paper_size)
+    rendered_html = render_label_html(
+        title=title,
+        prepared_at_text=prepared_at_text,
+        use_by_text=use_by_text,
+        prepared_by_text=prepared_by_text,
+        station_text=station_text,
+        quantity_text=quantity_text,
+        batch_code_text=batch_code_text,
+        allergens_text=allergens_text,
+        notes_text=notes_text,
+        paper_size=paper_size,
+    )
+
+    defaults = {
+        "label_title": title,
+        "label_body": label_body,
+        "paper_size": paper_size,
+        "rendered_html": rendered_html,
+        "title": title,
+        "item_name": title,
+        "payload": label_body,
+        "html_preview": rendered_html,
+        "prepared_at_text": prepared_at_text,
+        "use_by_text": use_by_text,
+        "prepared_by_text": prepared_by_text,
+        "station_text": station_text,
+        "quantity_text": quantity_text,
+        "batch_code_text": batch_code_text,
+        "allergens_text": allergens_text,
+        "notes_text": notes_text,
+    }
 
     label, _ = Label.objects.update_or_create(
         prep_task=prep_task,
-        defaults={
-            "label_title": label_title,
-            "label_body": label_body,
-            "paper_size": paper_size,
-            "rendered_html": rendered_html,
-        },
+        defaults=defaults,
     )
     return label
 
@@ -164,10 +361,10 @@ class PrinterService:
 
     def _print_windows_direct(self, printer, printer_name: str, items) -> dict:
         try:
+            import win32api  # type: ignore
+            import win32con  # type: ignore
             import win32print  # type: ignore
             import win32ui  # type: ignore
-            import win32con  # type: ignore
-            import win32api  # type: ignore
         except ImportError as exc:
             raise PrinterDispatchError("pywin32 is not installed.") from exc
 
@@ -191,8 +388,8 @@ class PrinterService:
             ) from exc
 
         try:
-            dpi_x = hdc.GetDeviceCaps(88)  # LOGPIXELSX
-            dpi_y = hdc.GetDeviceCaps(90)  # LOGPIXELSY
+            dpi_x = hdc.GetDeviceCaps(88)
+            dpi_y = hdc.GetDeviceCaps(90)
 
             width_in, height_in = self._paper_dimensions(
                 getattr(printer, "paper_size", None)
@@ -251,7 +448,6 @@ class PrinterService:
                     hdc.StartDoc(f"Label {label.id}")
                     hdc.StartPage()
 
-                    # Border drawn with lines only
                     pen = win32ui.CreatePen(win32con.PS_SOLID, 1, black_color)
                     old_pen = hdc.SelectObject(pen)
 
@@ -375,21 +571,23 @@ class PrinterService:
         }
 
     def _parse_label_fields(self, label) -> dict:
-        import re
-
-        title = (label.label_title or "").strip()
-        body = label.label_body or ""
+        title = _string(label.title or label.item_name or label.label_title)
 
         result = {
             "title": title,
-            "prepared": "",
-            "use_by": "",
-            "prepared_by": "",
-            "station": "",
-            "qty": "",
-            "batch": "",
-            "allergens": "",
+            "prepared": _string(label.prepared_at_text),
+            "use_by": _string(label.use_by_text),
+            "prepared_by": _string(label.prepared_by_text),
+            "station": _string(label.station_text),
+            "qty": _string(label.quantity_text),
+            "batch": _string(label.batch_code_text),
+            "allergens": _string(label.allergens_text),
         }
+
+        if all(result.values()):
+            return result
+
+        body = _string(label.payload or label.label_body)
 
         line_map = {
             "prepared": [r"^Prepared:\s*(.+)$", r"^Prep:\s*(.+)$"],
@@ -406,16 +604,15 @@ class PrinterService:
             if not line:
                 continue
 
-            matched = False
             for key, patterns in line_map.items():
+                if result[key]:
+                    continue
+
                 for pattern in patterns:
-                    m = re.match(pattern, line, flags=re.IGNORECASE)
-                    if m:
-                        result[key] = m.group(1).strip()
-                        matched = True
+                    match = re.match(pattern, line, flags=re.IGNORECASE)
+                    if match:
+                        result[key] = match.group(1).strip()
                         break
-                if matched:
-                    break
 
         return result
 
@@ -516,8 +713,8 @@ class PrinterService:
         }
 
     def _build_raw_payload(self, label) -> str:
-        title = label.label_title or ""
-        body = label.label_body or ""
+        title = _string(label.title or label.item_name or label.label_title)
+        body = _string(label.payload or label.label_body)
         return f"{title}\n{body}\n\n"
 
     def _print_mock_file(self, print_job: PrintJob, items) -> dict:
@@ -531,7 +728,9 @@ class PrinterService:
             copies = max(1, int(item.copies or 1))
 
             for copy_num in range(1, copies + 1):
-                file_path = output_dir / f"print_job_{print_job.id}_item_{item.id}_copy_{copy_num}.html"
+                file_path = output_dir / (
+                    f"print_job_{print_job.id}_item_{item.id}_copy_{copy_num}.html"
+                )
                 file_path.write_text(self._wrap_html(label), encoding="utf-8")
                 written_files.append(str(file_path))
 
@@ -562,6 +761,7 @@ class PrinterService:
         }
 
     def _wrap_html(self, label) -> str:
+        html = label.html_preview or label.rendered_html or ""
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -572,7 +772,7 @@ body {{ margin: 0; padding: 0.1in; }}
 </style>
 </head>
 <body>
-{label.rendered_html}
+{html}
 </body>
 </html>
 """

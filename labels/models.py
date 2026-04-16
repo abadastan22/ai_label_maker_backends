@@ -19,18 +19,35 @@ class Label(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="label",
     )
+
+    # Legacy fields retained only for backward compatibility with existing UI/search paths
     label_title = models.CharField(max_length=255)
-    label_body = models.TextField(blank=True)
-    ai_generated_text = models.TextField(blank=True)
-    qr_payload = models.TextField(blank=True)
-    paper_size = models.CharField(max_length=20, blank=True)
-    rendered_html = models.TextField(blank=True)
+    label_body = models.TextField(blank=True, default="")
+    ai_generated_text = models.TextField(blank=True, default="")
+    qr_payload = models.TextField(blank=True, default="")
+    paper_size = models.CharField(max_length=20, blank=True, default="")
+    rendered_html = models.TextField(blank=True, default="")
+
+    # Canonical structured fields
+    title = models.CharField(max_length=255, blank=True, default="")
+    item_name = models.CharField(max_length=255, blank=True, default="")
+    payload = models.TextField(blank=True, default="")
+    html_preview = models.TextField(blank=True, default="")
+
+    prepared_at_text = models.CharField(max_length=255, blank=True, default="")
+    use_by_text = models.CharField(max_length=255, blank=True, default="")
+    prepared_by_text = models.CharField(max_length=255, blank=True, default="")
+    station_text = models.CharField(max_length=255, blank=True, default="")
+    quantity_text = models.CharField(max_length=255, blank=True, default="")
+    batch_code_text = models.CharField(max_length=255, blank=True, default="")
+    allergens_text = models.TextField(blank=True, default="")
+    notes_text = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-created_at"]
 
     def __str__(self):
-        return self.label_title
+        return self.title or self.item_name or self.label_title
 
 
 class PrintJob(TimeStampedModel):
@@ -60,8 +77,12 @@ class PrintJob(TimeStampedModel):
         blank=True,
         related_name="print_jobs_requested",
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED)
-    error_message = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+    )
+    error_message = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-created_at"]

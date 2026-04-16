@@ -2,11 +2,7 @@ from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 
 from .models import PrepItem, PrepTask
-from .serializers import (
-    PrepItemSerializer,
-    PrepTaskSerializer,
-    PrepTaskCreateSerializer,
-)
+from .serializers import PrepItemSerializer, PrepTaskCreateSerializer, PrepTaskSerializer
 
 
 class PrepItemViewSet(viewsets.ModelViewSet):

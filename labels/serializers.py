@@ -1,5 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
+from prep.models import PrepItem
+from django.utils.dateparse import parse_datetime
 
 from .models import Label, PrintJob, PrintJobItem
 
@@ -108,3 +110,75 @@ class PrintJobCreateSerializer(serializers.ModelSerializer):
             )
 
         return print_job
+
+class OneClickPrintRequestSerializer(serializers.Serializer):
+    store = serializers.PrimaryKeyRelatedField(queryset=Store.objects.all())
+    department = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    prep_item = serializers.PrimaryKeyRelatedField(queryset=PrepItem.objects.all())
+    printer = serializers.PrimaryKeyRelatedField(queryset=Printer.objects.all())
+
+    quantity = serializers.IntegerField(required=False, min_value=1, default=1)
+    unit = serializers.CharField(required=False, allow_blank=True, default="each")
+    copies = serializers.IntegerField(required=False, min_value=1, default=1)
+
+    prepared_at = serializers.CharField(required=False, allow_blank=True)
+    paper_size = serializers.CharField(required=False, allow_blank=True, default="4x2")
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    batch_code = serializers.CharField(required=False, allow_blank=True, default="")
+    status = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_prepared_at(self, value):
+        if value in (None, ""):
+            return None
+
+        dt = parse_datetime(value)
+        if dt is None:
+            raise serializers.ValidationError(
+                "prepared_at must be a valid ISO-8601 datetime string."
+            )
+        return dt
+
+    def validate_paper_size(self, value):
+        normalized = (value or "4x2").strip().lower().replace(" ", "")
+        allowed = {"4x2", "4×2", "3x2", "3×2", "2x1", "2×1"}
+        if normalized not in allowed:
+            raise serializers.ValidationError(
+                "paper_size must be one of: 4x2, 3x2, 2x1."
+            )
+        return normalized.replace("×", "x")
+
+    def validate(self, attrs):
+        store = attrs["store"]
+        department = attrs.get("department")
+        prep_item = attrs["prep_item"]
+        printer = attrs["printer"]
+
+        prep_item_store = getattr(prep_item, "store_id", None)
+        if prep_item_store is not None and prep_item_store != store.id:
+            raise serializers.ValidationError(
+                {"prep_item": "Selected prep item does not belong to the selected store."}
+            )
+
+        prep_item_department = getattr(prep_item, "department_id", None)
+        if department is not None and prep_item_department is not None:
+            if prep_item_department != department.id:
+                raise serializers.ValidationError(
+                    {"prep_item": "Selected prep item does not belong to the selected department."}
+                )
+
+        printer_store = getattr(printer, "store_id", None)
+        if printer_store is not None and printer_store != store.id:
+            raise serializers.ValidationError(
+                {"printer": "Selected printer does not belong to the selected store."}
+            )
+
+        attrs["unit"] = (attrs.get("unit") or "each").strip() or "each"
+        attrs["notes"] = (attrs.get("notes") or "").strip()
+        attrs["batch_code"] = (attrs.get("batch_code") or "").strip()
+        attrs["status"] = (attrs.get("status") or "").strip()
+
+        return attrs

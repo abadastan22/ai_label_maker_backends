@@ -1,6 +1,7 @@
 import logging
 import traceback
 
+from django.db import transaction
 from django.db.models import Prefetch
 from django.utils.dateparse import parse_datetime
 from django.utils.timezone import is_naive, make_aware
@@ -14,6 +15,7 @@ from .exceptions import PrinterDispatchError
 from .models import Label, PrintJob, PrintJobItem
 from .serializers import (
     LabelSerializer,
+    OneClickPrintRequestSerializer,
     PrintJobCreateSerializer,
     PrintJobSerializer,
 )
@@ -30,6 +32,9 @@ class LabelViewSet(viewsets.ModelViewSet):
     search_fields = [
         "label_title",
         "label_body",
+        "title",
+        "item_name",
+        "payload",
         "ai_generated_text",
         "prep_task__prep_item__name",
     ]
@@ -142,61 +147,52 @@ class PrintJobViewSet(viewsets.ModelViewSet):
         pagination_class=None,
     )
     def one_click_print(self, request):
-        payload = request.data
+        request_serializer = OneClickPrintRequestSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        request_serializer.is_valid(raise_exception=True)
+        data = request_serializer.validated_data
 
-        prepared_at_raw = payload.get("prepared_at")
-        prepared_at = None
-        if prepared_at_raw:
-            prepared_at = parse_datetime(prepared_at_raw)
-
-            if prepared_at is None:
-                return Response(
-                    {"detail": "Invalid prepared_at format."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if is_naive(prepared_at):
-                prepared_at = make_aware(prepared_at)
+        prepared_at = data.get("prepared_at")
 
         try:
-            prep_task = PrepTask.objects.create(
-                store_id=payload["store"],
-                department_id=payload.get("department"),
-                prep_item_id=payload["prep_item"],
-                quantity=payload.get("quantity", 1),
-                unit=payload.get("unit", "each"),
-                prepared_by=request.user if request.user.is_authenticated else None,
-                prepared_at=prepared_at,
-                notes=payload.get("notes", ""),
-                batch_code=payload.get("batch_code", ""),
-                status=payload.get("status", PrepTask.STATUS_PENDING),
-            )
+            with transaction.atomic():
+                prep_task = PrepTask(
+                    store=data["store"],
+                    department=data.get("department"),
+                    prep_item=data["prep_item"],
+                    quantity=data.get("quantity", 1),
+                    unit=data.get("unit", "each"),
+                    prepared_by=request.user if request.user.is_authenticated else None,
+                    prepared_at=prepared_at,
+                    notes=data.get("notes", ""),
+                    batch_code=data.get("batch_code", ""),
+                    status=data.get("status", "") or PrepTask.STATUS_PENDING,
+                )
+                prep_task._skip_auto_label_sync = True
+                prep_task.save()
 
-            label = build_label_from_prep_task(
-                prep_task=prep_task,
-                paper_size=payload.get("paper_size", "4x2"),
-            )
+                label = build_label_from_prep_task(
+                    prep_task=prep_task,
+                    paper_size=data.get("paper_size", "4x2"),
+                )
 
-            print_job = PrintJob.objects.create(
-                printer_id=payload["printer"],
-                requested_by=request.user if request.user.is_authenticated else None,
-                status=PrintJob.STATUS_QUEUED,
-            )
+                print_job = PrintJob.objects.create(
+                    printer=data["printer"],
+                    requested_by=request.user if request.user.is_authenticated else None,
+                    status=PrintJob.STATUS_QUEUED,
+                )
 
-            PrintJobItem.objects.create(
-                print_job=print_job,
-                label=label,
-                copies=payload.get("copies", 1),
-            )
+                PrintJobItem.objects.create(
+                    print_job=print_job,
+                    label=label,
+                    copies=data.get("copies", 1),
+                )
 
             printer_service = PrinterService()
             dispatch_result = printer_service.dispatch_print_job(print_job)
 
-        except KeyError as exc:
-            return Response(
-                {"detail": f"Missing required field: {exc.args[0]}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         except PrinterDispatchError as exc:
             logger.exception(
                 "Print dispatch failed for print_job_id=%s",
@@ -236,7 +232,7 @@ class PrintJobViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        print_job.refresh_from_db()
+        print_job = self.get_queryset().get(pk=print_job.pk)
         serializer = PrintJobSerializer(print_job, context={"request": request})
 
         return Response(

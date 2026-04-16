@@ -17,17 +17,7 @@
 
 from django.contrib import admin
 from django.urls import include, path
-#from rest_framework.routers import DefaultRouter
 
-
-# from prep.views import PrepItemViewSet, PrepTaskViewSet
-# from labels.views import LabelViewSet, PrintJobViewSet
-
-# router = DefaultRouter()
-# router.register(r"prep-items", PrepItemViewSet, basename="prep-item")
-# router.register(r"prep-tasks", PrepTaskViewSet, basename="prep-task")
-# router.register(r"labels", LabelViewSet, basename="label")
-# router.register(r"print-jobs", PrintJobViewSet, basename="print-job")
 
 urlpatterns = [
     path("admin/", admin.site.urls),

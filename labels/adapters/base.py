@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 
 class BasePrinterAdapter(ABC):
-    driver_type = None
+    driver_type = "Window"
 
     @abstractmethod
     def dispatch(self, printer, documents, print_job):
