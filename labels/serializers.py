@@ -1,24 +1,52 @@
-from django.db import transaction
-from rest_framework import serializers
-from prep.models import PrepItem
 from django.utils.dateparse import parse_datetime
+from rest_framework import serializers
+
+from prep.models import PrepItem
+from stores.models import Department, Printer, Store
 
 from .models import Label, PrintJob, PrintJobItem
 
 
 class LabelSerializer(serializers.ModelSerializer):
-    prep_item_name = serializers.CharField(source="prep_task.prep_item.name", read_only=True)
+    prep_task_id = serializers.IntegerField(source="prep_task.id", read_only=True)
 
     class Meta:
         model = Label
-        fields = "__all__"
+        fields = [
+            "id",
+            "prep_task",
+            "prep_task_id",
+            "label_title",
+            "label_body",
+            "ai_generated_text",
+            "qr_payload",
+            "paper_size",
+            "rendered_html",
+            "title",
+            "item_name",
+            "payload",
+            "html_preview",
+            "prepared_at_text",
+            "use_by_text",
+            "prepared_by_text",
+            "station_text",
+            "quantity_text",
+            "batch_code_text",
+            "allergens_text",
+            "notes_text",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "prep_task_id"]
 
 
 class PrintJobItemSerializer(serializers.ModelSerializer):
-    label_id = serializers.SerializerMethodField()
-    label_title = serializers.SerializerMethodField()
-    label_body = serializers.SerializerMethodField()
-    paper_size = serializers.SerializerMethodField()
+    label = LabelSerializer(read_only=True)
+    label_id = serializers.PrimaryKeyRelatedField(
+        source="label",
+        queryset=Label.objects.all(),
+        write_only=True,
+    )
 
     class Meta:
         model = PrintJobItem
@@ -27,89 +55,119 @@ class PrintJobItemSerializer(serializers.ModelSerializer):
             "print_job",
             "label",
             "label_id",
-            "label_title",
-            "label_body",
-            "paper_size",
             "copies",
             "created_at",
             "updated_at",
         ]
-
-    def get_label_id(self, obj):
-        return obj.label.id if obj.label else None
-
-    def get_label_title(self, obj):
-        return obj.label.label_title if obj.label else None
-
-    def get_label_body(self, obj):
-        return obj.label.label_body if obj.label else None
-
-    def get_paper_size(self, obj):
-        return obj.label.paper_size if obj.label else None
+        read_only_fields = ["id", "created_at", "updated_at", "label"]
 
 
 class PrintJobSerializer(serializers.ModelSerializer):
     items = PrintJobItemSerializer(many=True, read_only=True)
-    printer_name = serializers.SerializerMethodField()
-    printer_ip = serializers.SerializerMethodField()
-    requested_by_username = serializers.SerializerMethodField()
+    printer_name = serializers.CharField(source="printer.name", read_only=True)
+    requested_by_username = serializers.CharField(source="requested_by.username", read_only=True)
 
     class Meta:
         model = PrintJob
-        fields = "__all__"
+        fields = [
+            "id",
+            "printer",
+            "printer_name",
+            "requested_by",
+            "requested_by_username",
+            "status",
+            "error_message",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "requested_by",
+            "requested_by_username",
+            "printer_name",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
 
-    def get_printer_name(self, obj):
-        return obj.printer.name if obj.printer else None
 
-    def get_printer_ip(self, obj):
-        return obj.printer.ip_address if obj.printer else None
+class PrintJobItemCreateSerializer(serializers.ModelSerializer):
+    label = serializers.PrimaryKeyRelatedField(queryset=Label.objects.all())
 
-    def get_requested_by_username(self, obj):
-        return obj.requested_by.username if obj.requested_by else None
+    class Meta:
+        model = PrintJobItem
+        fields = ["label", "copies"]
 
-
-class PrintJobCreateItemInputSerializer(serializers.Serializer):
-    label = serializers.IntegerField(min_value=1)
-    copies = serializers.IntegerField(min_value=1, default=1)
+    def validate_copies(self, value):
+        if value is None:
+            return 1
+        if value < 1:
+            raise serializers.ValidationError("Copies must be at least 1.")
+        return value
 
 
 class PrintJobCreateSerializer(serializers.ModelSerializer):
-    item_ids = PrintJobCreateItemInputSerializer(many=True, write_only=True)
+    items = PrintJobItemCreateSerializer(many=True, required=False)
 
     class Meta:
         model = PrintJob
-        fields = ["id", "printer", "status", "item_ids"]
+        fields = [
+            "id",
+            "printer",
+            "status",
+            "error_message",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
-    def validate_item_ids(self, value):
-        if not value:
-            raise serializers.ValidationError("At least one print job item is required.")
-
-        label_ids = [item["label"] for item in value]
-        found = set(Label.objects.filter(id__in=label_ids).values_list("id", flat=True))
-        missing = sorted(set(label_ids) - found)
-        if missing:
-            raise serializers.ValidationError(f"Unknown label ids: {missing}")
-
+    def validate_status(self, value):
+        allowed_statuses = {
+            PrintJob.STATUS_QUEUED,
+            PrintJob.STATUS_SENT,
+            PrintJob.STATUS_PRINTED,
+            PrintJob.STATUS_FAILED,
+        }
+        if value not in allowed_statuses:
+            raise serializers.ValidationError("Invalid print job status.")
         return value
 
-    @transaction.atomic
     def create(self, validated_data):
-        item_ids = validated_data.pop("item_ids", [])
-        request = self.context["request"]
+        items_data = validated_data.pop("items", [])
+        request = self.context.get("request")
 
-        if request.user and request.user.is_authenticated:
+        if request and request.user.is_authenticated:
             validated_data["requested_by"] = request.user
 
         print_job = PrintJob.objects.create(**validated_data)
 
-        for item in item_ids:
+        for item_data in items_data:
             PrintJobItem.objects.create(
                 print_job=print_job,
-                label_id=item["label"],
-                copies=item.get("copies", 1),
+                **item_data,
             )
 
         return print_job
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop("items", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if items_data is not None:
+            instance.items.all().delete()
+            for item_data in items_data:
+                PrintJobItem.objects.create(
+                    print_job=instance,
+                    **item_data,
+                )
+
+        return instance
+
 
 class OneClickPrintRequestSerializer(serializers.Serializer):
     store = serializers.PrimaryKeyRelatedField(queryset=Store.objects.all())
@@ -134,7 +192,6 @@ class OneClickPrintRequestSerializer(serializers.Serializer):
     def validate_prepared_at(self, value):
         if value in (None, ""):
             return None
-
         dt = parse_datetime(value)
         if dt is None:
             raise serializers.ValidationError(
@@ -146,9 +203,7 @@ class OneClickPrintRequestSerializer(serializers.Serializer):
         normalized = (value or "4x2").strip().lower().replace(" ", "")
         allowed = {"4x2", "4×2", "3x2", "3×2", "2x1", "2×1"}
         if normalized not in allowed:
-            raise serializers.ValidationError(
-                "paper_size must be one of: 4x2, 3x2, 2x1."
-            )
+            raise serializers.ValidationError("paper_size must be one of: 4x2, 3x2, 2x1.")
         return normalized.replace("×", "x")
 
     def validate(self, attrs):

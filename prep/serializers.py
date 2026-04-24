@@ -1,34 +1,28 @@
 from rest_framework import serializers
 
-from labels.models import Label, PrintJob, PrintJobItem
+from .models import PrepItem, PrepTask
 
-class LabelSerializer(serializers.ModelSerializer):
-    prep_task_id = serializers.IntegerField(source="prep_task.id", read_only=True)
+
+class PrepItemSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source="store.name", read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True)
 
     class Meta:
-        model = Label
+        model = PrepItem
         fields = [
             "id",
-            "prep_task",
-            "prep_task_id",
-            "label_title",
-            "label_body",
-            "ai_generated_text",
-            "qr_payload",
-            "paper_size",
-            "rendered_html",
-            "title",
-            "item_name",
-            "payload",
-            "html_preview",
-            "prepared_at_text",
-            "use_by_text",
-            "prepared_by_text",
-            "station_text",
-            "quantity_text",
-            "batch_code_text",
-            "allergens_text",
-            "notes_text",
+            "store",
+            "store_name",
+            "department",
+            "department_name",
+            "sku",
+            "name",
+            "description",
+            "ingredients",
+            "allergen_info",
+            "shelf_life_hours",
+            "storage_notes",
+            "is_active",
             "created_at",
             "updated_at",
         ]
@@ -36,146 +30,81 @@ class LabelSerializer(serializers.ModelSerializer):
             "id",
             "created_at",
             "updated_at",
-            "prep_task_id",
+            "store_name",
+            "department_name",
         ]
 
 
-class PrintJobItemSerializer(serializers.ModelSerializer):
-    label = LabelSerializer(read_only=True)
-    label_id = serializers.PrimaryKeyRelatedField(
-        source="label",
-        queryset=Label.objects.all(),
-        write_only=True,
-    )
+class PrepTaskSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source="store.name", read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True)
+    prep_item_name = serializers.CharField(source="prep_item.name", read_only=True)
+    prepared_by_username = serializers.CharField(source="prepared_by.username", read_only=True)
 
     class Meta:
-        model = PrintJobItem
+        model = PrepTask
         fields = [
             "id",
-            "print_job",
-            "label",
-            "label_id",
-            "copies",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [
-            "id",
-            "created_at",
-            "updated_at",
-            "label",
-        ]
-
-
-class PrintJobSerializer(serializers.ModelSerializer):
-    items = PrintJobItemSerializer(many=True, read_only=True)
-    printer_name = serializers.CharField(source="printer.name", read_only=True)
-    requested_by_username = serializers.CharField(source="requested_by.username", read_only=True)
-
-    class Meta:
-        model = PrintJob
-        fields = [
-            "id",
-            "printer",
-            "printer_name",
-            "requested_by",
-            "requested_by_username",
+            "store",
+            "store_name",
+            "department",
+            "department_name",
+            "prep_item",
+            "prep_item_name",
+            "quantity",
+            "unit",
+            "prepared_by",
+            "prepared_by_username",
+            "prepared_at",
+            "expires_at",
             "status",
-            "error_message",
-            "items",
+            "notes",
+            "batch_code",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "id",
-            "requested_by",
-            "requested_by_username",
-            "printer_name",
-            "items",
+            "expires_at",
+            "created_at",
+            "updated_at",
+            "store_name",
+            "department_name",
+            "prep_item_name",
+            "prepared_by_username",
+        ]
+
+
+class PrepTaskCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PrepTask
+        fields = [
+            "id",
+            "store",
+            "department",
+            "prep_item",
+            "quantity",
+            "unit",
+            "prepared_at",
+            "status",
+            "notes",
+            "batch_code",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
             "created_at",
             "updated_at",
         ]
 
-
-class PrintJobItemCreateSerializer(serializers.ModelSerializer):
-    label = serializers.PrimaryKeyRelatedField(queryset=Label.objects.all())
-
-    class Meta:
-        model = PrintJobItem
-        fields = [
-            "label",
-            "copies",
-        ]
-
-    def validate_copies(self, value):
-        if value is None:
-            return 1
+    def validate_quantity(self, value):
         if value < 1:
-            raise serializers.ValidationError("Copies must be at least 1.")
-        return value
-
-
-class PrintJobCreateSerializer(serializers.ModelSerializer):
-    items = PrintJobItemCreateSerializer(many=True, required=False)
-
-    class Meta:
-        model = PrintJob
-        fields = [
-            "id",
-            "printer",
-            "status",
-            "error_message",
-            "items",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [
-            "id",
-            "created_at",
-            "updated_at",
-        ]
-
-    def validate_status(self, value):
-        allowed_statuses = {
-            PrintJob.STATUS_QUEUED,
-            PrintJob.STATUS_SENT,
-            PrintJob.STATUS_PRINTED,
-            PrintJob.STATUS_FAILED,
-        }
-        if value not in allowed_statuses:
-            raise serializers.ValidationError("Invalid print job status.")
+            raise serializers.ValidationError("Quantity must be at least 1.")
         return value
 
     def create(self, validated_data):
-        items_data = validated_data.pop("items", [])
         request = self.context.get("request")
-
         if request and request.user.is_authenticated:
-            validated_data["requested_by"] = request.user
-
-        print_job = PrintJob.objects.create(**validated_data)
-
-        for item_data in items_data:
-            PrintJobItem.objects.create(
-                print_job=print_job,
-                **item_data,
-            )
-
-        return print_job
-
-    def update(self, instance, validated_data):
-        items_data = validated_data.pop("items", None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        if items_data is not None:
-            instance.items.all().delete()
-            for item_data in items_data:
-                PrintJobItem.objects.create(
-                    print_job=instance,
-                    **item_data,
-                )
-
-        return instance
+            validated_data["prepared_by"] = request.user
+        return PrepTask.objects.create(**validated_data)

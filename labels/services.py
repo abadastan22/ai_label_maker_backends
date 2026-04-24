@@ -6,6 +6,7 @@ from typing import Any
 
 from django.utils.html import escape
 from django.utils.timezone import localtime
+from django.conf import settings
 
 from .exceptions import (
     PrinterAdapterNotFoundError,
@@ -57,34 +58,24 @@ def render_label_html(
     paper_size: str = "4x2",
 ) -> str:
     esc = lambda value: escape(value or "")
-
     details = []
 
     if prepared_at_text:
         details.append(f'<div style="margin-bottom:4px;">Prep: {esc(prepared_at_text)}</div>')
-
     if use_by_text:
-        details.append(
-            f'<div style="margin-bottom:8px; color:#d62828;">Use By: {esc(use_by_text)}</div>'
-        )
-
+        details.append(f'<div style="margin-bottom:8px; color:#d62828;">Use By: {esc(use_by_text)}</div>')
     if prepared_by_text:
-        details.append(f'<div>Prepared By: {esc(prepared_by_text)}</div>')
-
+        details.append(f"<div>Prepared By: {esc(prepared_by_text)}</div>")
     if station_text:
-        details.append(f'<div>Station: {esc(station_text)}</div>')
-
+        details.append(f"<div>Station: {esc(station_text)}</div>")
     if quantity_text:
-        details.append(f'<div>Qty: {esc(quantity_text)}</div>')
-
+        details.append(f"<div>Qty: {esc(quantity_text)}</div>")
     if batch_code_text:
-        details.append(f'<div>Batch: {esc(batch_code_text)}</div>')
-
+        details.append(f"<div>Batch: {esc(batch_code_text)}</div>")
     if allergens_text:
-        details.append(f'<div>Allergens: {esc(allergens_text)}</div>')
-
+        details.append(f"<div>Allergens: {esc(allergens_text)}</div>")
     if notes_text:
-        details.append(f'<div>Notes: {esc(notes_text)}</div>')
+        details.append(f"<div>Notes: {esc(notes_text)}</div>")
 
     width_map = {
         "4x2": ("4in", "2in"),
@@ -110,11 +101,9 @@ def render_label_html(
         <div style="font-size: 11px; letter-spacing: 2px; color: #667085; margin-bottom: 10px;">
             FOOD PREP LABEL
         </div>
-
         <div style="font-size: 18px; font-weight: 700; margin-bottom: 10px;">
             {esc(title)}
         </div>
-
         <div style="font-size: 12px; line-height: 1.4;">
             {"".join(details)}
         </div>
@@ -126,9 +115,7 @@ def build_label_body_from_prep_task(prep_task) -> str:
     prep_item = _safe_attr(prep_task, "prep_item")
 
     prepared_at_text = _format_dt(_safe_attr(prep_task, "prepared_at"))
-    use_by_text = _format_dt(
-        _safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by")
-    )
+    use_by_text = _format_dt(_safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by"))
 
     quantity = _safe_attr(prep_task, "quantity")
     unit = _string(_safe_attr(prep_task, "unit"))
@@ -147,10 +134,7 @@ def build_label_body_from_prep_task(prep_task) -> str:
         or _safe_attr(_safe_attr(prep_task, "department"), "name")
     )
 
-    batch_code_text = _string(
-        _safe_attr(prep_task, "batch_code")
-        or _safe_attr(prep_item, "batch_code")
-    )
+    batch_code_text = _string(_safe_attr(prep_task, "batch_code") or _safe_attr(prep_item, "batch_code"))
 
     allergens_text = _join_values(
         _safe_attr(prep_task, "allergens_text")
@@ -191,9 +175,7 @@ def build_label_from_prep_task(prep_task, paper_size: str = "4x2") -> Label:
     )
 
     prepared_at_text = _format_dt(_safe_attr(prep_task, "prepared_at"))
-    use_by_text = _format_dt(
-        _safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by")
-    )
+    use_by_text = _format_dt(_safe_attr(prep_task, "expires_at") or _safe_attr(prep_task, "use_by"))
 
     prepared_by_text = _string(
         _safe_attr(prep_task, "prepared_by_name")
@@ -210,14 +192,9 @@ def build_label_from_prep_task(prep_task, paper_size: str = "4x2") -> Label:
 
     quantity_value = _safe_attr(prep_task, "quantity")
     quantity_unit = _string(_safe_attr(prep_task, "unit"))
-    quantity_text = " ".join(
-        part for part in [_string(quantity_value), quantity_unit] if part
-    ).strip()
+    quantity_text = " ".join(part for part in [_string(quantity_value), quantity_unit] if part).strip()
 
-    batch_code_text = _string(
-        _safe_attr(prep_task, "batch_code")
-        or _safe_attr(prep_item, "batch_code")
-    )
+    batch_code_text = _string(_safe_attr(prep_task, "batch_code") or _safe_attr(prep_item, "batch_code"))
 
     allergens_text = _join_values(
         _safe_attr(prep_task, "allergens_text")
@@ -280,6 +257,42 @@ class PrinterService:
     HTML_PREVIEW_DRIVER_TYPES = {"html_preview"}
     PDF_DRIVER_TYPES = {"pdf_file"}
     ZPL_DRIVER_TYPES = {"zebra_zpl"}
+    
+    def _print_pdf_file(self, print_job: PrintJob, items) -> dict:
+        try:
+            from weasyprint import HTML  # type: ignore
+        except ImportError as exc:
+            raise PrinterDispatchError(
+                "pdf_file printer requires WeasyPrint. Install it with: pip install weasyprint"
+            ) from exc
+
+        output_dir = Path(
+            getattr(settings, "PRINT_OUTPUT_DIR", None)
+            or Path(tempfile.gettempdir()) / "ai_label_maker" / "pdf_prints"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        written_files = []
+
+        for item in items:
+            label = item.label
+            copies = max(1, int(item.copies or 1))
+
+            for copy_num in range(1, copies + 1):
+                file_path = output_dir / (
+                    f"print_job_{print_job.id}_label_{label.id}_copy_{copy_num}.pdf"
+                )
+
+                html = self._wrap_html(label)
+                HTML(string=html).write_pdf(str(file_path))
+                written_files.append(str(file_path))
+
+        return {
+            "status": "sent",
+            "transport": "pdf_file",
+            "files": written_files,
+            "items": len(items),
+        }
 
     def dispatch_print_job(self, print_job: PrintJob) -> dict:
         printer = print_job.printer
@@ -307,7 +320,6 @@ class PrinterService:
                 if not printer_name:
                     raise PrinterDispatchError("Printer device_name not configured.")
                 result = self._print_windows_direct(printer, printer_name, items)
-
             elif driver_type in self.RAW_TCP_DRIVER_TYPES:
                 if printer_name and self._windows_printer_exists(printer_name):
                     result = self._print_windows_direct(printer, printer_name, items)
@@ -317,24 +329,16 @@ class PrinterService:
                             "raw_tcp printer requires ip_address when no Windows device_name is available."
                         )
                     result = self._print_raw_tcp(printer_ip, printer_port, items)
-
             elif driver_type in self.MOCK_DRIVER_TYPES:
                 result = self._print_mock_file(print_job, items)
-
             elif driver_type in self.HTML_PREVIEW_DRIVER_TYPES:
                 result = self._print_html_preview(print_job, items)
-
             elif driver_type in self.PDF_DRIVER_TYPES:
-                raise PrinterAdapterNotFoundError("pdf_file is not implemented yet.")
-
+                result = self._print_pdf_file(print_job, items)
             elif driver_type in self.ZPL_DRIVER_TYPES:
                 raise PrinterAdapterNotFoundError("zebra_zpl is not implemented yet.")
-
             else:
-                raise PrinterAdapterNotFoundError(
-                    f"No adapter for driver_type '{driver_type}'"
-                )
-
+                raise PrinterAdapterNotFoundError(f"No adapter for driver_type '{driver_type}'")
         except PrinterDispatchError as exc:
             self._fail(print_job, str(exc))
             raise
@@ -375,17 +379,13 @@ class PrinterService:
             )
         ]
         if printer_name not in available:
-            raise PrinterDispatchError(
-                f"Printer '{printer_name}' not found. Available: {available}"
-            )
+            raise PrinterDispatchError(f"Printer '{printer_name}' not found. Available: {available}")
 
         try:
             hdc = win32ui.CreateDC()
             hdc.CreatePrinterDC(printer_name)
         except Exception as exc:
-            raise PrinterDispatchError(
-                f"Unable to create printer DC for '{printer_name}': {exc}"
-            ) from exc
+            raise PrinterDispatchError(f"Unable to create printer DC for '{printer_name}': {exc}") from exc
 
         try:
             dpi_x = hdc.GetDeviceCaps(88)
@@ -408,31 +408,11 @@ class PrinterService:
             sizes = self._font_profile(dpi_y, compact=is_small)
 
             fonts = {
-                "header": win32ui.CreateFont({
-                    "name": "Arial",
-                    "height": -sizes["header"],
-                    "weight": 500,
-                }),
-                "title": win32ui.CreateFont({
-                    "name": "Arial",
-                    "height": -sizes["title"],
-                    "weight": 800,
-                }),
-                "body": win32ui.CreateFont({
-                    "name": "Arial",
-                    "height": -sizes["body"],
-                    "weight": 400,
-                }),
-                "body_bold": win32ui.CreateFont({
-                    "name": "Arial",
-                    "height": -sizes["body"],
-                    "weight": 700,
-                }),
-                "small": win32ui.CreateFont({
-                    "name": "Arial",
-                    "height": -sizes["small"],
-                    "weight": 400,
-                }),
+                "header": win32ui.CreateFont({"name": "Arial", "height": -sizes["header"], "weight": 500}),
+                "title": win32ui.CreateFont({"name": "Arial", "height": -sizes["title"], "weight": 800}),
+                "body": win32ui.CreateFont({"name": "Arial", "height": -sizes["body"], "weight": 400}),
+                "body_bold": win32ui.CreateFont({"name": "Arial", "height": -sizes["body"], "weight": 700}),
+                "small": win32ui.CreateFont({"name": "Arial", "height": -sizes["small"], "weight": 400}),
             }
 
             red_color = win32api.RGB(220, 40, 40)
@@ -527,7 +507,6 @@ class PrinterService:
                             continue
 
                         prefix = f"{label_name}: "
-
                         hdc.SelectObject(fonts["body_bold"])
                         hdc.TextOut(x, y, prefix)
                         prefix_width = hdc.GetTextExtent(prefix)[0]
@@ -554,9 +533,7 @@ class PrinterService:
                 hdc.AbortDoc()
             except Exception:
                 pass
-            raise PrinterDispatchError(
-                f"Direct Windows printing failed for '{printer_name}': {exc}"
-            ) from exc
+            raise PrinterDispatchError(f"Direct Windows printing failed for '{printer_name}': {exc}") from exc
         finally:
             try:
                 hdc.DeleteDC()
@@ -618,7 +595,6 @@ class PrinterService:
 
     def _paper_dimensions(self, paper_size: str) -> tuple[float, float]:
         normalized = (paper_size or "").lower().replace('"', "").replace(" ", "")
-
         mapping = {
             "4x2": (4.0, 2.0),
             "4×2": (4.0, 2.0),
@@ -627,7 +603,6 @@ class PrinterService:
             "3x2": (3.0, 2.0),
             "3×2": (3.0, 2.0),
         }
-
         return mapping.get(normalized, (4.0, 2.0))
 
     def _font_profile(self, dpi_y: int, compact: bool = False) -> dict:
@@ -638,7 +613,6 @@ class PrinterService:
                 "body": max(11, int(0.10 * dpi_y)),
                 "small": max(9, int(0.08 * dpi_y)),
             }
-
         return {
             "header": max(12, int(0.08 * dpi_y)),
             "title": max(26, int(0.20 * dpi_y)),
@@ -726,11 +700,8 @@ class PrinterService:
         for item in items:
             label = item.label
             copies = max(1, int(item.copies or 1))
-
             for copy_num in range(1, copies + 1):
-                file_path = output_dir / (
-                    f"print_job_{print_job.id}_item_{item.id}_copy_{copy_num}.html"
-                )
+                file_path = output_dir / f"print_job_{print_job.id}_item_{item.id}_copy_{copy_num}.html"
                 file_path.write_text(self._wrap_html(label), encoding="utf-8")
                 written_files.append(str(file_path))
 

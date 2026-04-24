@@ -20,7 +20,6 @@ class Label(TimeStampedModel):
         related_name="label",
     )
 
-    # Legacy fields retained only for backward compatibility with existing UI/search paths
     label_title = models.CharField(max_length=255)
     label_body = models.TextField(blank=True, default="")
     ai_generated_text = models.TextField(blank=True, default="")
@@ -28,7 +27,6 @@ class Label(TimeStampedModel):
     paper_size = models.CharField(max_length=20, blank=True, default="")
     rendered_html = models.TextField(blank=True, default="")
 
-    # Canonical structured fields
     title = models.CharField(max_length=255, blank=True, default="")
     item_name = models.CharField(max_length=255, blank=True, default="")
     payload = models.TextField(blank=True, default="")
@@ -77,11 +75,7 @@ class PrintJob(TimeStampedModel):
         blank=True,
         related_name="print_jobs_requested",
     )
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default=STATUS_QUEUED,
-    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED)
     error_message = models.TextField(blank=True, default="")
 
     class Meta:

@@ -3,14 +3,13 @@ import traceback
 
 from django.db import transaction
 from django.db.models import Prefetch
-from django.utils.dateparse import parse_datetime
-from django.utils.timezone import is_naive, make_aware
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from prep.models import PrepTask
+
 from .exceptions import PrinterDispatchError
 from .models import Label, PrintJob, PrintJobItem
 from .serializers import (
@@ -61,14 +60,12 @@ class PrintJobViewSet(viewsets.ModelViewSet):
         )
 
     def get_serializer_class(self):
-        current_action = getattr(self, "action", None)
-        if current_action in ["create", "update", "partial_update"]:
+        if self.action in ["create", "update", "partial_update"]:
             return PrintJobCreateSerializer
         return PrintJobSerializer
 
     def filter_queryset(self, queryset):
-        current_action = getattr(self, "action", None)
-        if current_action == "one_click_print":
+        if self.action == "one_click_print":
             return queryset
         return super().filter_queryset(queryset)
 
@@ -116,14 +113,81 @@ class PrintJobViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["get"], url_path="status")
+    def status(self, request, pk=None):
+        job = self.get_object()
+
+        return Response(
+            {
+                "id": job.id,
+                "status": job.status,
+                "error_message": job.error_message,
+                "printer": job.printer_id,
+                "printer_name": job.printer.name if job.printer else None,
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
     @action(detail=True, methods=["post"])
     def mark_printed(self, request, pk=None):
         job = self.get_object()
         job.status = PrintJob.STATUS_PRINTED
         job.error_message = ""
         job.save(update_fields=["status", "error_message", "updated_at"])
+        return Response({"detail": "Print job marked as printed."}, status=status.HTTP_200_OK)
+    
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="preview-label",
+        filter_backends=[],
+        pagination_class=None,
+    )
+        
+    def preview_label(self, request):
+        request_serializer = OneClickPrintRequestSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        request_serializer.is_valid(raise_exception=True)
+        data = request_serializer.validated_data
+
+        prep_item = data["prep_item"]
+
+        title = prep_item.name
+        prepared_at = data.get("prepared_at")
+        quantity_text = f"{data.get('quantity', 1)} {data.get('unit', 'each')}".strip()
+
+        use_by_text = ""
+        if prepared_at and getattr(prep_item, "shelf_life_hours", None):
+            from django.utils.timezone import localtime
+            from datetime import timedelta
+
+            use_by = prepared_at + timedelta(hours=prep_item.shelf_life_hours)
+            use_by_text = localtime(use_by).strftime("%m/%d/%Y, %I:%M %p")
+
+        from .services import render_label_html
+
+        html = render_label_html(
+            title=title,
+            prepared_at_text=prepared_at.strftime("%m/%d/%Y, %I:%M %p") if prepared_at else "",
+            use_by_text=use_by_text,
+            prepared_by_text=request.user.get_full_name() or request.user.username,
+            station_text=getattr(prep_item.department, "name", "") if prep_item.department else "",
+            quantity_text=quantity_text,
+            batch_code_text=data.get("batch_code", ""),
+            allergens_text=getattr(prep_item, "allergen_info", "") or "",
+            notes_text=data.get("notes", ""),
+            paper_size=data.get("paper_size", "4x2"),
+        )
+
         return Response(
-            {"detail": "Print job marked as printed."},
+            {
+                "html": html,
+                "paper_size": data.get("paper_size", "4x2"),
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -134,10 +198,7 @@ class PrintJobViewSet(viewsets.ModelViewSet):
         job.status = PrintJob.STATUS_FAILED
         job.error_message = error_message
         job.save(update_fields=["status", "error_message", "updated_at"])
-        return Response(
-            {"detail": "Print job marked as failed."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"detail": "Print job marked as failed."}, status=status.HTTP_200_OK)
 
     @action(
         detail=False,
@@ -154,8 +215,6 @@ class PrintJobViewSet(viewsets.ModelViewSet):
         request_serializer.is_valid(raise_exception=True)
         data = request_serializer.validated_data
 
-        prepared_at = data.get("prepared_at")
-
         try:
             with transaction.atomic():
                 prep_task = PrepTask(
@@ -165,7 +224,7 @@ class PrintJobViewSet(viewsets.ModelViewSet):
                     quantity=data.get("quantity", 1),
                     unit=data.get("unit", "each"),
                     prepared_by=request.user if request.user.is_authenticated else None,
-                    prepared_at=prepared_at,
+                    prepared_at=data.get("prepared_at"),
                     notes=data.get("notes", ""),
                     batch_code=data.get("batch_code", ""),
                     status=data.get("status", "") or PrepTask.STATUS_PENDING,
@@ -240,8 +299,9 @@ class PrintJobViewSet(viewsets.ModelViewSet):
                 "detail": "One-click print completed.",
                 "prep_task_id": prep_task.id,
                 "label_id": label.id,
+                "print_job_id": print_job.id,
                 "dispatch_result": dispatch_result,
                 "print_job": serializer.data,
             },
-            status=status.HTTP_201_CREATED,
-        )
+    status=status.HTTP_201_CREATED,
+)
